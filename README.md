@@ -59,3 +59,12 @@ To remove all deployed resources
 cdk destroy
 ```
 Please make sure to delete S3 buckets that are created as part of the solution to avoid any unnecessary storage costs.
+
+# Contributors  
+Reagan Rosario (reagaros@amazon.com)  
+Matthew Juliana (mattjul@amazon.com)  
+Anil Kodali (akodali@amazon.com)  
+Prasanna Saraswathi Krishnan (pskrish@amazon.com)  
+Justin Haydt (jjhaydt@amazon.com)  
+
+If you are interested in contributing, please refer to contributing guidelines [here](/CONTRIBUTING.md).
