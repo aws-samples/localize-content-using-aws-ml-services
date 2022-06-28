@@ -9,6 +9,7 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cdk from "aws-cdk-lib";
 import * as s3 from 'aws-cdk-lib/aws-s3'
+import { NagSuppressions } from 'cdk-nag'
 
 import { Construct } from 'constructs';
 import { S3EventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
@@ -16,6 +17,89 @@ import { S3EventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 export class PollyBlogCdkStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-IAM5',
+        reason: 'Reviewed IAM permissons manually to make sure the wild card permissions are on a specific bucket created by this stack'
+      },
+    ])
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-IAM4',
+        reason: 'The managed lambda execution rule is created by the CDK for the notification event created on S3 bucket, leaving it as is for now as it would require additional custom coding'
+      },
+    ])
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-S1',
+        reason: 'This is a demo stack, no need for server access logs to be enabled'
+      },
+    ])
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-S10',
+        reason: 'This is a demo stack, no need for SSL access. The public access is disabled and the contents are served via cloudfront'
+      },
+    ])
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-CFR1',
+        reason: 'This is a demo stack, no need for Geo restrictions'
+      },
+    ])
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-CFR2',
+        reason: 'This is a demo stack, no need for WAF integration'
+      },
+    ])
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-CFR3',
+        reason: 'This is a demo stack, no need for server access logs to be enabled'
+      },
+    ])
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-CFR4',
+        reason: 'This is a demo stack, using deafault cloudfront certificate(TLS_V1) without enforcing a security protocol'
+      },
+    ])
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-SF1',
+        reason: 'This is a demo stack, no need enabled ALL logging'
+      },
+    ])
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-SF2',
+        reason: 'This is a demo stack, no need for x-ray'
+      },
+    ])
+
+    NagSuppressions.addStackSuppressions(this, [
+      {
+        id: 'AwsSolutions-L1',
+        reason: 'All the lambdas created as part of the demo use python 3.9, the error pertains to a sample html file being uploaded to S3 bucket which can be ignored'
+      },
+    ])
+
+    const lambdaCWLogGroupPolicy =
+    new iam.PolicyStatement({
+      actions: ['logs:CreateLogGroup','logs:CreateLogStream', 'logs:PutLogEvents'],
+      resources: ['arn:aws:logs:' + cdk.Stack.of(this).region + ':' + cdk.Stack.of(this).account + ':log-group:/aws/lambda/PollyBlogCdkStack-*'],
+    })
 
     //New bucket to upload the original video into
     const bucket = new Bucket(this, 'PollyBlogBucket', {
@@ -27,24 +111,23 @@ export class PollyBlogCdkStack extends Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
 
+    const s3BucketDeployLambdaRole = new iam.Role(this, 'S3BucketDeployDefaultLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    s3BucketDeployLambdaRole.addToPolicy(lambdaCWLogGroupPolicy)
     new s3deploy.BucketDeployment(this, 'DeploySampleVideo', {
       sources: [s3deploy.Source.asset('lib/sample')],
       destinationBucket:bucket,
+      role: s3BucketDeployLambdaRole,
       destinationKeyPrefix: 'inputVideo'
     });
 
     //Cloudfront distribution for the S3 OAI
     const mediaDistribution = new cloudfront.Distribution(this, 'MediaDistribution', {
-      defaultBehavior: {origin: new origins.S3Origin(bucket)}
-    });
-    
-    const mediaConvertRole = new iam.Role(this, 'MediaConvertRole', {
-      assumedBy: new iam.ServicePrincipal('mediaconvert.amazonaws.com'),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName(
-          'AmazonS3FullAccess',
-        ),
-      ],
+      defaultBehavior: {
+        origin: new origins.S3Origin(bucket), 
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS
+      }
     });
 
     const S3ReadWritePolicy = 
@@ -59,10 +142,17 @@ export class PollyBlogCdkStack extends Stack {
       resources: ['arn:aws:s3:::' + bucket.bucketName + '/*'],
     });
 
+    const mediaConvertRole = new iam.Role(this, 'MediaConvertRole', {
+      assumedBy: new iam.ServicePrincipal('mediaconvert.amazonaws.com')
+    });
+    mediaConvertRole.attachInlinePolicy(new iam.Policy(this, 'MediaConvertInlinePolicy', {
+      statements: [S3ReadWritePolicy]
+    }))
+
     const passRolePolicy = 
       new iam.PolicyStatement({
       actions: ['iam:PassRole'],
-      resources: ['*'],
+      resources: [mediaConvertRole.roleArn],
     });
 
     const buckeName = bucket.bucketName
@@ -92,10 +182,15 @@ export class PollyBlogCdkStack extends Stack {
       description: "The target language code",
       default: "es"})
 
+    const transcribeLambdaRole = new iam.Role(this, 'TranscribeDefaultLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    transcribeLambdaRole.addToPolicy(lambdaCWLogGroupPolicy)
     const transcribeAudio = new lambda.Function(this, 'TranscribeAudio', {
       runtime: lambda.Runtime.PYTHON_3_9,
       code: lambda.Code.fromAsset('lambda/transcribe'),
       handler: 'transcribe.handler',
+      role: transcribeLambdaRole,
       environment: {
         BUCKET_NAME: buckeName
       }
@@ -103,27 +198,42 @@ export class PollyBlogCdkStack extends Stack {
 
     const cdn_url = "https://" + mediaDistribution.domainName + "/inputVideo/play_video.html"
 
+    const getTranscribeAudioLambdaRole = new iam.Role(this, 'GetTranscribeAudioDefaultLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    getTranscribeAudioLambdaRole.addToPolicy(lambdaCWLogGroupPolicy)
     const getTranscribeAudio = new lambda.Function(this, 'GetTranscribeAudio', {
       runtime: lambda.Runtime.PYTHON_3_9,
       code: lambda.Code.fromAsset('lambda/transcribe'),
       handler: 'get_transcribe_status.handler',
+      role: getTranscribeAudioLambdaRole,
     })
 
+    const translateTextLamdaRole = new iam.Role(this, 'TranslateTextDefaultLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    translateTextLamdaRole.addToPolicy(lambdaCWLogGroupPolicy)
     const translateTextLamda = new lambda.Function(this, 'TranslateText', {
       runtime: lambda.Runtime.PYTHON_3_9,
       code: lambda.Code.fromAsset('lambda/translate'),
       handler: 'translate.handler',
+      role: translateTextLamdaRole,
       environment: {
         BUCKET_NAME: buckeName,
         TARGET_LANG_CODE:targetLanguageCode.valueAsString
       }
     })
     
+    const generatePollyAudioLambdaRole = new iam.Role(this, 'GeneratePollyAudioDefaultLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    generatePollyAudioLambdaRole.addToPolicy(lambdaCWLogGroupPolicy)
     const generatePollyAudio = new lambda.Function(this, 'GeneratePollyAudio', {
       runtime: lambda.Runtime.PYTHON_3_9,
       code: lambda.Code.fromAsset('lambda/polly'),
       handler: 'generate_polly_audio.handler',
       timeout: cdk.Duration.seconds(30),
+      role: generatePollyAudioLambdaRole,
       environment: {
         BUCKET_NAME: buckeName,
         POLLY_LANGUAGE_CODE:pollyLanguageCode.valueAsString,
@@ -133,11 +243,16 @@ export class PollyBlogCdkStack extends Stack {
       }
     })
 
+    const generateSpeechMarksLambdaRole = new iam.Role(this, 'GenerateSpeechMarksDefaultLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    generateSpeechMarksLambdaRole.addToPolicy(lambdaCWLogGroupPolicy)
     const generateSpeechMarks = new lambda.Function(this, 'GenerateSpeechMarks', {
       runtime: lambda.Runtime.PYTHON_3_9,
       code: lambda.Code.fromAsset('lambda/polly'),
       handler: 'generate_speech_marks.handler',
       timeout: cdk.Duration.seconds(30),
+      role: generateSpeechMarksLambdaRole,
       environment: {
         BUCKET_NAME: buckeName,
         POLLY_LANGUAGE_CODE:pollyLanguageCode.valueAsString,
@@ -147,11 +262,16 @@ export class PollyBlogCdkStack extends Stack {
       }
     })
 
+    const generateSubtitlesLamdbdaRole = new iam.Role(this, 'GenerateSubtitlesDefaultLamdbdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    generateSubtitlesLamdbdaRole.addToPolicy(lambdaCWLogGroupPolicy)
     const generateSubtitlesLamdbda = new lambda.Function(this, 'GenerateSubtitles', {
       runtime: lambda.Runtime.PYTHON_3_9,
       code: lambda.Code.fromAsset('lambda/polly'),
       handler: 'generate_subtitles.handler',
       timeout: cdk.Duration.seconds(30),
+      role: generateSubtitlesLamdbdaRole,
       environment: {
         BUCKET_NAME: buckeName,
         POLLY_LANGUAGE_CODE:pollyLanguageCode.valueAsString,
@@ -159,11 +279,16 @@ export class PollyBlogCdkStack extends Stack {
       }
     });
 
+    const createMediaConvertJobLambdaRole = new iam.Role(this, 'createMediaConvertJobDefaultLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    createMediaConvertJobLambdaRole.addToPolicy(lambdaCWLogGroupPolicy)
     const createMediaConvertJob = new lambda.Function(this, 'CreateMediaConvertJob', {
       runtime: lambda.Runtime.PYTHON_3_9,
       code: lambda.Code.fromAsset('lambda/mediaconvert'),
       handler: 'create_mediaconvert_job.handler',
       timeout: cdk.Duration.seconds(30),
+      role: createMediaConvertJobLambdaRole,
       environment: {
         BUCKET_NAME: buckeName,
         MC_ROLE_ARN:mediaConvertRole.roleArn,
@@ -193,10 +318,16 @@ export class PollyBlogCdkStack extends Stack {
         resources: ['*']
     })
 
-    const ssmParameterPolicy = 
+    const ssmGetParameterPolicy = 
       new iam.PolicyStatement({
-        actions: ['ssm:GetParameter','ssm:PutParameter'],
-        resources:['*']
+        actions: ['ssm:GetParameter'],
+        resources:['arn:aws:ssm:' + cdk.Stack.of(this).region +':' + cdk.Stack.of(this).account + ':*']
+      })
+
+    const ssmPutParameterPolicy = 
+      new iam.PolicyStatement({
+        actions: ['ssm:PutParameter'],
+        resources:['arn:aws:ssm:' + cdk.Stack.of(this).region +':' + cdk.Stack.of(this).account + ':parameter/input_video_file']
       })
 
     const pollySpeechSynthesisPolicy = 
@@ -235,9 +366,14 @@ export class PollyBlogCdkStack extends Stack {
       time: sfn.WaitTime.duration(cdk.Duration.seconds(5)),
     });
 
-    const getAudoJobStatusLambda =  new lambda.Function(this, 'GetAudioJobtatusTask', {
+    const getAudioJobStatusLambdaRole = new iam.Role(this, 'GetAudioJobStatusDefaultLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    getAudioJobStatusLambdaRole.addToPolicy(lambdaCWLogGroupPolicy)
+    const getAudioJobStatusLambda =  new lambda.Function(this, 'GetAudioJobtatusTask', {
       runtime: lambda.Runtime.PYTHON_3_9,
       code: lambda.Code.fromAsset('lambda/jobstatus'),
+      role: getAudioJobStatusLambdaRole,
       handler: 'get_job_status.handler'
     });
 
@@ -247,13 +383,18 @@ export class PollyBlogCdkStack extends Stack {
     });
     
     const getAudioJobStatus = new tasks.LambdaInvoke(this, 'Get Audio Job Status', {
-      lambdaFunction: getAudoJobStatusLambda,
+      lambdaFunction: getAudioJobStatusLambda,
       outputPath: '$.Payload',
     });
 
+    const getSpeechmarksJobStatusLambdaRole = new iam.Role(this, 'GetSpeechmarksJobStatusDefaultLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    getSpeechmarksJobStatusLambdaRole.addToPolicy(lambdaCWLogGroupPolicy)
     const getSpeechmarksJobStatusLambda =  new lambda.Function(this, 'GetSpeechmarksJobtatusTask', {
       runtime: lambda.Runtime.PYTHON_3_9,
       code: lambda.Code.fromAsset('lambda/jobstatus'),
+      role: getSpeechmarksJobStatusLambdaRole,
       handler: 'get_job_status.handler'
     });
     
@@ -264,7 +405,7 @@ export class PollyBlogCdkStack extends Stack {
 
     transcribeAudio.role?.attachInlinePolicy(
       new iam.Policy(this, 'TranscribeAudioRole', {
-        statements: [startTranscribeAudioPolicy, S3ReadWritePolicy, ssmParameterPolicy]
+        statements: [startTranscribeAudioPolicy, S3ReadWritePolicy, ssmGetParameterPolicy]
       }) 
     )
 
@@ -276,11 +417,11 @@ export class PollyBlogCdkStack extends Stack {
 
     translateTextLamda.role?.attachInlinePolicy(
       new iam.Policy(this, 'TranslateTextRole', {
-        statements: [startTranslateTextPolicy, passRolePolicy, S3ReadWritePolicy]
+        statements: [startTranslateTextPolicy, S3ReadWritePolicy]
       })
     ) 
-
-    getAudoJobStatusLambda.role?.attachInlinePolicy(
+    
+    getAudioJobStatusLambda.role?.attachInlinePolicy(
       new iam.Policy(this, 'PollyAudioStatus', {
         statements: [pollySpeechSynthesisPolicy]
       })
@@ -317,7 +458,7 @@ export class PollyBlogCdkStack extends Stack {
 
     createMediaConvertJob.role?.attachInlinePolicy(
       new iam.Policy(this, 'MediaConvertPolicy', {
-        statements: [mediaConvertPolicy, passRolePolicy, ssmParameterPolicy, S3ReadWritePolicy, cloudfrontPolicy]
+        statements: [mediaConvertPolicy, passRolePolicy, ssmGetParameterPolicy, S3ReadWritePolicy, cloudfrontPolicy]
       })
     )
     
@@ -360,10 +501,15 @@ export class PollyBlogCdkStack extends Stack {
           .otherwise(waitTranscribeAudioJob))
       });
 
+    const executeStateMachineLambdaRole = new iam.Role(this, 'ExecuteStateMachineDefaultLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com')
+    })
+    executeStateMachineLambdaRole.addToPolicy(lambdaCWLogGroupPolicy)
     const executeStateMachine =  new lambda.Function(this, 'StartStateMachineExecution', {
       runtime: lambda.Runtime.PYTHON_3_9,
       code: lambda.Code.fromAsset('lambda/statemachine'),
       handler: 'state_machine.handler',
+      role: executeStateMachineLambdaRole,
       environment: {
         STATE_MACHINE_ARN: stateMachine.stateMachineArn
       }
@@ -371,12 +517,12 @@ export class PollyBlogCdkStack extends Stack {
 
     const stateMachinePolicy = new iam.PolicyStatement({
       actions: ['states:StartExecution'],
-      resources: ['*']
+      resources: [stateMachine.stateMachineArn]
     });
 
     executeStateMachine.role?.attachInlinePolicy(
       new iam.Policy(this, 'ExecuteStateMachine', {
-        statements: [stateMachinePolicy, ssmParameterPolicy]
+        statements: [stateMachinePolicy, ssmPutParameterPolicy]
       })
     )
 
